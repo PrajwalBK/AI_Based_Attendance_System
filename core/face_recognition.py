@@ -1,0 +1,147 @@
+import numpy as np
+import pickle
+import os
+from insightface.app import FaceAnalysis
+
+class FaceRecognitionHandler:
+    def __init__(self, face_db_path='data/face_encodings.pkl', similarity_threshold=0.6):
+        # Initialize InsightFace
+        self.app = FaceAnalysis(
+            name='buffalo_l', 
+            providers=['CUDAExecutionProvider', 'CPUExecutionProvider']
+        )
+        self.app.prepare(ctx_id=0, det_size=(640, 640))
+        
+        self.face_db_path = face_db_path
+        self.similarity_threshold = similarity_threshold
+        self.registered_faces = self.load_face_encodings()
+    
+    def detect_faces(self, frame):
+        """Detect faces in a frame"""
+        faces = self.app.get(frame)
+        return faces
+    
+    def extract_face_encoding(self, frame):
+        """Extract face encoding from a frame"""
+        faces = self.app.get(frame)
+        
+        if len(faces) == 0:
+            return None, "No face detected"
+        
+        if len(faces) > 1:
+            return None, "Multiple faces detected. Please ensure only one person is in frame"
+        
+        return faces[0].embedding, "Face encoding extracted successfully"
+    
+    def load_face_encodings(self):
+        """Load face encodings from pickle file"""
+        if os.path.exists(self.face_db_path):
+            try:
+                with open(self.face_db_path, 'rb') as f:
+                    return pickle.load(f)
+            except Exception as e:
+                print(f"Error loading face encodings: {e}")
+                return {}
+        return {}
+    
+    def save_face_encodings(self):
+        """Save face encodings to pickle file"""
+        try:
+            with open(self.face_db_path, 'wb') as f:
+                pickle.dump(self.registered_faces, f)
+            return True
+        except Exception as e:
+            print(f"Error saving face encodings: {e}")
+            return False
+    
+    def add_face_encoding(self, person_id, name, face_encoding):
+        """Add a face encoding to the in-memory database"""
+        self.registered_faces[person_id] = {
+            'name': name,
+            'encoding': face_encoding
+        }
+        return self.save_face_encodings()
+    
+    def remove_face_encoding(self, person_id):
+        """Remove a face encoding from the database"""
+        if person_id in self.registered_faces:
+            del self.registered_faces[person_id]
+            return self.save_face_encodings() # This MUST be here to save to .pkl
+        return False
+    
+    def calculate_similarity(self, encoding1, encoding2):
+        """Calculate cosine similarity between two face encodings"""
+        similarity = np.dot(encoding1, encoding2) / (
+            np.linalg.norm(encoding1) * np.linalg.norm(encoding2)
+        )
+        return similarity
+    
+    def recognize_face(self, face_encoding):
+        """Recognize a face by comparing with registered faces"""
+        if len(self.registered_faces) == 0:
+            return None, None, 0.0
+        
+        max_similarity = 0.0
+        recognized_id = None
+        recognized_name = None
+        
+        for person_id, data in self.registered_faces.items():
+            similarity = self.calculate_similarity(face_encoding, data['encoding'])
+            
+            if similarity > max_similarity and similarity > self.similarity_threshold:
+                max_similarity = similarity
+                recognized_id = person_id
+                recognized_name = data['name']
+        
+        return recognized_id, recognized_name, max_similarity
+    
+    def recognize_multiple_faces(self, faces):
+        """Recognize multiple faces in a frame"""
+        recognized_faces = []
+        
+        for face in faces:
+            person_id, person_name, similarity = self.recognize_face(face.embedding)
+            
+            recognized_faces.append({
+                'bbox': face.bbox,
+                'person_id': person_id,
+                'person_name': person_name,
+                'similarity': similarity,
+                'det_score': face.det_score,
+                'landmarks': face.kps if hasattr(face, 'kps') else None
+            })
+        
+        return recognized_faces
+    
+    def verify_face(self, person_id, face_encoding):
+        """Verify if a face encoding matches a specific person"""
+        if person_id not in self.registered_faces:
+            return False, 0.0
+        
+        similarity = self.calculate_similarity(
+            face_encoding, 
+            self.registered_faces[person_id]['encoding']
+        )
+        
+        is_match = similarity > self.similarity_threshold
+        return is_match, similarity
+    
+    def get_registered_count(self):
+        """Get the number of registered faces"""
+        return len(self.registered_faces)
+    
+    def get_all_registered_ids(self):
+        """Get all registered person IDs"""
+        return list(self.registered_faces.keys())
+    
+    def reload_face_encodings(self):
+        """Reload face encodings from file"""
+        self.registered_faces = self.load_face_encodings()
+        return len(self.registered_faces)
+    
+    def update_similarity_threshold(self, new_threshold):
+        """Update the similarity threshold"""
+        if 0.0 <= new_threshold <= 1.0:
+            self.similarity_threshold = new_threshold
+            return True
+        return False
